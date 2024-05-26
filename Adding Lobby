@@ -1,0 +1,42 @@
+@@ -1,25 +1,26 @@
+const http = require("http");
+const express = require("express");
+const path = require("path");
+const { Server } = require("socket.io");
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+// Serve static files from the 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
+// Handle all requests by serving the index.html file
+app.get("*", (req, res) => {
+	res.sendFile(path.join(__dirname, "public/index.html"));
+});
+// Track connected players (very basic, needs improvement)
+let players = {};
+let lobbies = {}; // Object to store lobby information
+
+io.on("connection", (socket) => {
+	socket.emit("list-lobbies", lobbies);
+	socket.on("join-lobby", (lobbyId) => {
+		if (lobbies[lobbyId]) {
+			// Lobby exists, add player
+			lobbies[lobbyId].players.push(socket.id);
+			// Notify other players (optional)
+			io.to(lobbyId).emit("player-joined", socket.id);
+			// Send lobby state and information to the joining player, including player count
+			const playerCount = lobbies[lobbyId].players.length;
+			socket.emit("lobby-joined", {
+				...lobbies[lobbyId],
+				playerCount,
+				lobbyId,
+			});
+		} else {
+			// Create a new lobby
+			lobbies[lobbyId] = {
+				id: lobbyId,
+				players: [socket.id],
+				// Add other lobby state properties
+			};
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
