@@ -1,0 +1,347 @@
+@@ -1,139 +1,143 @@
+const http = require("http");
+const express = require("express");
+const path = require("path");
+const { Server } = require("socket.io");
+const { generateUsername } = require("unique-username-generator");
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+// Serve static files from the 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
+// Handle all requests by serving the index.html file
+app.get("*", (req, res) => {
+	res.sendFile(path.join(__dirname, "public/index.html"));
+});
+// Track connected players (very basic, needs improvement)
+let players = {};
+let lobbies = {}; // Object to store lobby information
+io.on("connection", (socket) => {
+	socket.username = generateUsername();
+	socket.emit("list-lobbies", lobbies);
+	socket.on("join-lobby", (lobbyId) => {
+		console.log(`[${socket.username}] Joined a Lobby`);
+		if (lobbies[lobbyId]) {
+			// Lobby exists, add player
+			lobbies[lobbyId].players.push({
+				id: socket.id,
+				username: socket.username,
+			});
+			lobbies[lobbyId].gameState = "Waiting for Players";
+			const playerCount = Object.keys(lobbies[lobbyId].players).length;
+			// Notify other players except the joining player
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					console.log(player);
+					io.to(player.id).emit("player-joined", {
+						...lobbies[lobbyId],
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+			// Send lobby state and information to the joining player
+			socket.emit("lobby-joined", {
+				...lobbies[lobbyId],
+				playerCount,
+				lobbyId,
+			});
+		} else {
+			// Create the server side game grid
+			let gameGrid = [];
+			let counter = 0;
+			for (let y = 0; y < 10; y++) {
+				gameGrid[y] = [];
+				for (let x = 0; x < 10; x++) {
+					gameGrid[y][x] = {
+						x: x,
+						y: y,
+						id: counter,
+						data: {
+							currentCharacter: "H",
+							placedBy: null,
+						},
+					};
+					counter++;
+				}
+			}
+			// Create a new lobby
+			lobbies[lobbyId] = {
+				id: lobbyId,
+				gameState: "Waiting for Player",
+				players: [
+					{
+						id: socket.id,
+						username: socket.username,
+					},
+				],
+				gameGrid: gameGrid,
+				// Add other lobby state properties
+			};
+			socket.lobbyId = lobbyId;
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
+		}
+	});
+	console.log(
+		"Player connected:",
+		socket.id,
+		"randomly given username",
+		socket.username
+	);
+	// Assign player ID (needs improvement for multiple games)
+	players[socket.id] = { id: socket.id, monsters: [] };
+	// Handle player disconnection (needs improvement for game state)
+	socket.on("disconnect", () => {
+		delete players[socket.id];
+		// Update player count for the lobby the player belonged to
+		if (lobbies[socket.lobbyId]) {
+			// Check if lobby still exists
+			const lobbyId = socket.lobbyId; // Assuming you store the lobby ID on the socket
+			const playerCount =
+				Object.keys(lobbies[lobbyId].players).length - 1;
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					io.to(player.id).emit("player-left", {
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+			lobbies[lobbyId].players = lobbies[lobbyId].players.filter(
+				(playerId) => playerId !== socket.id
+			); // Remove player ID from the lobby's player list
+		}
+	});
+	// Store the lobby ID the player joins (assuming it's received)
+	socket.on("join-lobby", (lobbyId) => {
+		socket.lobbyId = lobbyId; // Store the lobby ID for later use (e.g., disconnection)
+	});
+
+	socket.on("change-username", (newUsername) => {
+		socket.username = newUsername;
+	});
+
+	// Placeholder for handling game logic (needs full implementation)
+	socket.on("game-action", (data) => {
+		if (data.action === "finish-turn") {
+  8 changes: 8 additions & 0 deletions8  
+public/css/style.css
+@@ -134,7 +134,15 @@ body {
+    font-size: 0.9rem;
+    color: #898989;
+    position: absolute;
+    -webkit-user-select: none; /* Safari */
+    -ms-user-select: none; /* IE 10 and IE 11 */
+    user-select: none; /* Standard syntax */
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+.top-left-button:hover {
+    color: #c4c1c1;
+}
+
+.grid-cell-content {
+  96 changes: 96 additions & 0 deletions96  
+public/js/client.js
+@@ -1,38 +1,65 @@
+const mainContent = document.querySelector("#mainContent");
+const socket = io("http://127.0.0.1:3000");
+let amountOfPlayersInLobby = 0;
+let currentRound = 1;
+// Generate the Game Grid
+const gameGrid = [];
+let counter = 0;
+for (let y = 0; y < 10; y++) {
+	gameGrid[y] = [];
+	for (let x = 0; x < 10; x++) {
+		gameGrid[y][x] = {
+			x: x,
+			y: y,
+			id: counter,
+			data: {
+				currentCharacter: null,
+				placedBy: null,
+			},
+		};
+		counter++;
+	}
+}
+let savedLobbies = [];
+let activeLobby = {};
+function clearMainContent() {
+	mainContent.innerHTML = "";
+}
+function isCharDigit(n) {
+	return !!n.trim() && n > -1;
+}
+
+function isCharAlphabet(str) {
+	return str.length === 1 && str.match(/[a-z]/i);
+}
+
+function setCookie(cname, cvalue, exdays) {
+	const d = new Date();
+	d.setTime(d.getTime() + exdays * 24 * 60 * 60 * 1000);
+	let expires = "expires=" + d.toUTCString();
+	document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+}
+
+function getCookie(cname) {
+	let name = cname + "=";
+	let decodedCookie = decodeURIComponent(document.cookie);
+	let ca = decodedCookie.split(";");
+	for (let i = 0; i < ca.length; i++) {
+		let c = ca[i];
+		while (c.charAt(0) == " ") {
+			c = c.substring(1);
+		}
+		if (c.indexOf(name) == 0) {
+			return c.substring(name.length, c.length);
+		}
+	}
+	return "";
+}
+
+function updateGameGridDataById(id, newData) {
+	for (let y = 0; y < gameGrid.length; y++) {
+		for (let x = 0; x < gameGrid[y].length; x++) {
+@@ -70,6 +97,18 @@ function addBackToMainMenuButton() {
+	mainContent.appendChild(backToMainMenuButton);
+}
+
+function addPreferencesButton() {
+	const preferencesButton = document.createElement("p");
+	preferencesButton.className = "top-left-button";
+	preferencesButton.innerText = "Preferences";
+
+	preferencesButton.addEventListener("click", () => {
+		displayPreferences();
+	});
+
+	mainContent.appendChild(preferencesButton);
+}
+
+function displayGrid(grid) {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+@@ -207,6 +246,8 @@ function displayLobbySelector() {
+	centeredContentContainer.appendChild(joinLobbyByIdContainer);
+	centeredContentContainer.appendChild(createLobbyButton);
+	centeredContentContainer.appendChild(browseLobbiesButton);
+
+	addPreferencesButton();
+	mainContent.appendChild(centeredContentContainer);
+}
+
+@@ -324,6 +365,61 @@ function displayActiveGame(grid, playerWithTurn) {
+	displayPlayerList(playerWithTurn);
+}
+
+function displayPreferences() {
+	clearMainContent();
+	const usernameSettingsContainer = document.createElement("div");
+	usernameSettingsContainer.className = "join-lobby-by-id-container";
+
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+
+	const usernameInput = document.createElement("input");
+	usernameInput.placeholder = "Username";
+	usernameInput.className = "lobby-id-input";
+	if (getCookie("localUsername").length > 0) {
+		usernameInput.value = getCookie("localUsername");
+	}
+
+	const saveUsernameButton = document.createElement("button");
+	saveUsernameButton.className = "join-lobby-button";
+	saveUsernameButton.innerText = "Save";
+	saveUsernameButton.disabled = true;
+
+	usernameInput.addEventListener("keydown", (event) => {
+		event.preventDefault();
+
+		if (isCharAlphabet(event.key)) {
+			usernameInput.value += event.key;
+		}
+
+		if (event.key === "Backspace")
+			usernameInput.value = usernameInput.value.substring(
+				0,
+				usernameInput.value.length - 1
+			);
+
+		if (usernameInput.value.length > 0) {
+			if (usernameInput.value !== getCookie("localUsername"))
+				saveUsernameButton.disabled = false;
+			if (usernameInput.value === getCookie("localUsername"))
+				saveUsernameButton.disabled = true;
+		} else {
+			saveUsernameButton.disabled = true;
+		}
+	});
+
+	saveUsernameButton.addEventListener("click", (event) => {
+		socket.emit("change-username", usernameInput.value);
+		setCookie("localUsername", usernameInput.value, 1000);
+	});
+
+	usernameSettingsContainer.appendChild(usernameInput);
+	usernameSettingsContainer.appendChild(saveUsernameButton);
+	centeredContentContainer.appendChild(usernameSettingsContainer);
+	addBackToMainMenuButton();
+	mainContent.appendChild(centeredContentContainer);
+}
+
+function startGame() {
+	console.log("Starting Game");
+	socket.emit("game-action", {
+		action: "start-game",
+	});
+}
+socket.once("connect", () => {
+	console.log("Socket connected");
+	displayLobbySelector();
+});
+socket.on("lobby-joined", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	console.log(data);
+	if (data.playerCount === 4) {
+		savedLobby = data;
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+		// Access and potentially display username
+		const joinedPlayerUsername =
+			data.players[data.players.length - 1].username;
+		console.log(`New player joined with username: ${joinedPlayerUsername}`);
+	}
+});
+socket.on("player-joined", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	if (data.playerCount === 4) {
+		savedLobby = data;
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+	}
+});
+socket.on("player-left", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	updateWaitingForPlayersScreen(data.playerCount);
+});
+socket.on("lobby-created", (lobbyId) => {
+	displayWaitingForPlayersScreen(lobbyId);
+	updateWaitingForPlayersScreen(1);
+});
+socket.on("list-lobbies", (lobbies) => {
+	savedLobbies = lobbies;
+});
+socket.on("current-player", (playerWithTurn) => {
+	console.log("Current Player");
+	displayActiveGame(gameGrid, playerWithTurn);
+});
+socket.on("round-end", () => {
+	currentRound++;
+});
