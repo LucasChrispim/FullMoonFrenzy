@@ -1,0 +1,187 @@
+const http = require("http");
+const express = require("express");
+const path = require("path");
+const { Server } = require("socket.io");
+const { generateUsername } = require("unique-username-generator");
+
+const app = express();
+const server = http.createServer(app);
+@@ -20,26 +21,33 @@ let players = {};
+let lobbies = {}; // Object to store lobby information
+
+io.on("connection", (socket) => {
+	socket.username = generateUsername();
+	socket.emit("list-lobbies", lobbies);
+	socket.on("join-lobby", (lobbyId) => {
+		console.log(`[${socket.username}] Joined a Lobby`);
+		if (lobbies[lobbyId]) {
+			// Lobby exists, add player
+			lobbies[lobbyId].players.push(socket.id);
+			lobbies[lobbyId].players.push({
+				id: socket.id,
+				username: socket.username,
+			});
+
+			lobbies[lobbyId].gameState = "Waiting for Players";
+			const playerCount = lobbies[lobbyId].players.length;
+			const playerCount = Object.keys(lobbies[lobbyId].players).length;
+
+			// Notify other players
+			for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+				if (lobbies[lobbyId].players[i] !== socket.id) {
+					io.to(lobbies[lobbyId].players[i]).emit("player-joined", {
+			// Notify other players except the joining player
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					console.log(player);
+					io.to(player.id).emit("player-joined", {
+						...lobbies[lobbyId],
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+
+			// Send lobby state and information to the joining player, including player count
+			// Send lobby state and information to the joining player
+			socket.emit("lobby-joined", {
+				...lobbies[lobbyId],
+				playerCount,
+@@ -69,19 +77,28 @@ io.on("connection", (socket) => {
+			lobbies[lobbyId] = {
+				id: lobbyId,
+				gameState: "Waiting for Player",
+				players: [socket.id],
+				players: [
+					{
+						id: socket.id,
+						username: socket.username,
+					},
+				],
+				gameGrid: gameGrid,
+				// Add other lobby state properties
+			};
+
+			socket.lobbyId = lobbyId;
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
+			console.log("Lobby Created:", lobbyId);
+		}
+	});
+
+	console.log("Player connected:", socket.id);
+	console.log(
+		"Player connected:",
+		socket.id,
+		"randomly given username",
+		socket.username
+	);
+
+	// Assign player ID (needs improvement for multiple games)
+	players[socket.id] = { id: socket.id, monsters: [] };
+@@ -94,15 +111,18 @@ io.on("connection", (socket) => {
+		if (lobbies[socket.lobbyId]) {
+			// Check if lobby still exists
+			const lobbyId = socket.lobbyId; // Assuming you store the lobby ID on the socket
+			const playerCount = lobbies[lobbyId].players.length - 1; // Remove disconnected player
+			for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+				if (lobbies[lobbyId].players[i] !== socket.id) {
+					io.to(lobbies[lobbyId].players[i]).emit("player-left", {
+			const playerCount =
+				Object.keys(lobbies[lobbyId].players).length - 1;
+
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					io.to(player.id).emit("player-left", {
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+
+			lobbies[lobbyId].players = lobbies[lobbyId].players.filter(
+				(playerId) => playerId !== socket.id
+			); // Remove player ID from the lobby's player list
+@@ -144,20 +164,22 @@ io.on("connection", (socket) => {
+				// You can increment a currentRound counter or perform other round-based actions
+
+				console.log(`[${lobbyId}] Round ended, starting new round`);
+				for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+					io.to(lobbies[lobbyId].players[i]).emit("round-end", {
+
+				for (const player of lobbies[lobbyId].players) {
+					io.to(player.id).emit("round-end", {
+						completedTurns,
+					});
+				}
+			}
+
+			// Broadcast the new current player to all players in the lobby
+			for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+				io.to(lobbies[lobbyId].players[i]).emit(
+			for (const player of lobbies[lobbyId].players) {
+				io.to(player.id).emit(
+					"current-player",
+					currentPlayers[currentPlayerIndex]
+				);
+			}
+
+			console.log(
+				`[${lobbyId}][${socket.id}] Finishing turn, current player: ${currentPlayers[currentPlayerIndex]}`
+			);
+@@ -183,11 +205,8 @@ io.on("connection", (socket) => {
+				lobbies[lobbyId].currentPlayerIndex = 0;
+
+				// Broadcast the current player (first player) to all players in the lobby
+				for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+					io.to(lobbies[lobbyId].players[i]).emit(
+						"current-player",
+						currentPlayers[0]
+					);
+				for (const player of lobbies[lobbyId].players) {
+					io.to(player.id).emit("current-player", currentPlayers[0]);
+				}
+
+				console.log(
+ 8 changes: 7 additions & 1 deletion8  
+package-lock.json
+Some generated files are not rendered by default. Learn more about how customized files appear on GitHub.
+
+  3 changes: 2 additions & 1 deletion3  
+package.json
+@@ -4,6 +4,7 @@
+    "http": "^0.0.1-security",
+    "nodemon": "^3.1.0",
+    "path": "^0.12.7",
+    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "unique-username-generator": "^1.3.0"
+  }
+}
+  12 changes: 9 additions & 3 deletions12  
+public/js/client.js
+@@ -292,9 +292,10 @@ function displayPlayerList(activePlayer) {
+
+	for (i = 0; i < savedLobby.players.length; i++) {
+		const playerListEntry = document.createElement("li");
+		playerListEntry.innerText = `Player #${i + 1}`;
+		if (activePlayer === savedLobby.players[i])
+			playerListEntry.innerText += "(Active)";
+		// Include username and active player indicator
+		playerListEntry.innerText = `${savedLobby.players[i].username} ${
+			activePlayer === savedLobby.players[i].id ? "(Active)" : ""
+		}`;
+		playerListEntry.className = "player-list-entry";
+		playerList.appendChild(playerListEntry);
+	}
+@@ -343,6 +344,11 @@ socket.on("lobby-joined", (data) => {
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+
+		// Access and potentially display username
+		const joinedPlayerUsername =
+			data.players[data.players.length - 1].username;
+		console.log(`New player joined with username: ${joinedPlayerUsername}`);
+	}
+});
