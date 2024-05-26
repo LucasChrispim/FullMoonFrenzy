@@ -1,0 +1,87 @@
+    border: 1px solid #6e6e6e;
+    border-radius: 10px 0px 0px 10px;
+    padding: 3px;
+    padding-left: 5px;
+    &:active {
+        border: none;
+    }
+    &:focus {
+        outline: none;
+        border: 1px solid #898989;
+    }
+}
+.lobby-selector-title {
+    margin-bottom: 20px;
+}
+.join-lobby-button {
+    border-radius: 0px 10px 10px 0px;
+    background-color: #6e6e6e;
+    border: none;
+    color: white;
+    padding: 0px 10px;
+    transition: 0.3s;
+
+    &:enabled {
+        cursor: pointer;
+        color: white;
+    }
+}
+
+.join-lobby-button:disabled {
+    color: #ffffff4a;
+}
+
+.create-lobby-button {
+    width: 220px;
+    border-radius: 10px;
+@@ -84,4 +89,50 @@ body {
+    color: white;
+    padding: 5px 10px;
+    cursor: pointer;
+    opacity: 0.4;
+    transition: 0.3s;
+}
+
+.create-lobby-button:hover {
+    opacity: 1;
+}
+
+.lobby-list-entry {
+    display: flex;
+    flex-direction: row;
+    background-color: #6e6e6e;
+    color: white;
+    width: 300px;
+    cursor: pointer;
+    transition: 0.3s;
+    opacity: 0.4;
+}
+
+.lobby-list-entry:hover {
+    opacity: 1;
+}
+
+.lobby-list-lobby-id {
+    flex: 5;
+    width: 200px;
+    padding-left: 15px;
+    margin-top: 5px;
+    margin-bottom: 5px;
+}
+
+.lobby-list-lobby-playercount {
+    margin-top: 5px;
+    flex: 0.45;
+  padding-right: 10px;
+    margin-bottom: 5px;
+    padding-right: 10px;
+}
+
+.top-left-button {
+    z-index: 99;
+    margin: 15px;
+    font-size: 0.9rem;
+    color: #898989;
+    position: absolute;
+    cursor: pointer;
+}
