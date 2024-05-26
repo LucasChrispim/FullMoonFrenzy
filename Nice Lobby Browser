@@ -1,0 +1,87 @@
+const http = require("http");
+const express = require("express");
+const path = require("path");
+const { Server } = require("socket.io");
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+// Serve static files from the 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
+
+// Handle all requests by serving the index.html file
+app.get("*", (req, res) => {
+	res.sendFile(path.join(__dirname, "public/index.html"));
+});
+
+// Track connected players (very basic, needs improvement)
+let players = {};
+let lobbies = {}; // Object to store lobby information
+
+io.on("connection", (socket) => {
+	socket.emit("list-lobbies", lobbies);
+	socket.on("join-lobby", (lobbyId) => {
+		if (lobbies[lobbyId]) {
+			// Lobby exists, add player
+			lobbies[lobbyId].players.push(socket.id);
+			// Notify other players (optional)
+			io.to(lobbyId).emit("player-joined", socket.id);
+
+			// Send lobby state and information to the joining player, including player count
+			const playerCount = lobbies[lobbyId].players.length;
+			socket.emit("lobby-joined", {
+				...lobbies[lobbyId],
+				playerCount,
+				lobbyId,
+			});
+		} else {
+			// Create a new lobby
+			lobbies[lobbyId] = {
+				id: lobbyId,
+				players: [socket.id],
+				// Add other lobby state properties
+			};
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
+			console.log("Lobby Created:", lobbyId);
+		}
+	});
+
+	console.log("Player connected:", socket.id);
+
+	// Assign player ID (needs improvement for multiple games)
+	players[socket.id] = { id: socket.id, monsters: [] };
+
+	// Handle player disconnection (needs improvement for game state)
+	socket.on("disconnect", () => {
+		delete players[socket.id];
+
+		// Update player count for the lobby the player belonged to
+		if (lobbies[socket.lobbyId]) {
+			// Check if lobby still exists
+			const lobbyId = socket.lobbyId; // Assuming you store the lobby ID on the socket
+			const playerCount = lobbies[lobbyId].players.length - 1; // Remove disconnected player
+			io.to(lobbyId).emit("playerCount", playerCount); // Broadcast updated player count to the lobby
+			lobbies[lobbyId].players = lobbies[lobbyId].players.filter(
+				(playerId) => playerId !== socket.id
+			); // Remove player ID from the lobby's player list
+		}
+	});
+
+	// Store the lobby ID the player joins (assuming it's received)
+	socket.on("join-lobby", (lobbyId) => {
+		socket.lobbyId = lobbyId; // Store the lobby ID for later use (e.g., disconnection)
+	});
+
+	// Placeholder for handling game logic (needs full implementation)
+	socket.on("game-action", (data) => {
+		console.log("Game action received:", data);
+		// Implement logic for monster placement, movement, and collision
+		// Update game state and broadcast to all players in the lobby
+	});
+});
+
+server.listen(3000, () => {
+	console.log("Server listening on port 3000");
+});
