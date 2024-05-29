@@ -1,0 +1,203 @@
+const http = require("http");
+const express = require("express");
+const path = require("path");
+const { Server } = require("socket.io");
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+// Serve static files from the 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
+
+// Handle all requests by serving the index.html file
+app.get("*", (req, res) => {
+	res.sendFile(path.join(__dirname, "public/index.html"));
+});
+
+// Track connected players (very basic, needs improvement)
+let players = {};
+let lobbies = {}; // Object to store lobby information
+
+io.on("connection", (socket) => {
+	socket.emit("list-lobbies", lobbies);
+	socket.on("join-lobby", (lobbyId) => {
+		if (lobbies[lobbyId]) {
+			// Lobby exists, add player
+			lobbies[lobbyId].players.push(socket.id);
+			lobbies[lobbyId].gameState = "Waiting for Players";
+			const playerCount = lobbies[lobbyId].players.length;
+
+			// Notify other players
+			for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+				if (lobbies[lobbyId].players[i] !== socket.id) {
+					io.to(lobbies[lobbyId].players[i]).emit("player-joined", {
+						...lobbies[lobbyId],
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+
+			// Send lobby state and information to the joining player, including player count
+			socket.emit("lobby-joined", {
+				...lobbies[lobbyId],
+				playerCount,
+				lobbyId,
+			});
+		} else {
+			// Create the server side game grid
+			let gameGrid = [];
+			let counter = 0;
+			for (let y = 0; y < 10; y++) {
+				gameGrid[y] = [];
+				for (let x = 0; x < 10; x++) {
+					gameGrid[y][x] = {
+						x: x,
+						y: y,
+						id: counter,
+						data: {
+							currentCharacter: "H",
+							placedBy: null,
+						},
+					};
+					counter++;
+				}
+			}
+
+			// Create a new lobby
+			lobbies[lobbyId] = {
+				id: lobbyId,
+				gameState: "Waiting for Player",
+				players: [socket.id],
+				gameGrid: gameGrid,
+				// Add other lobby state properties
+			};
+
+			socket.lobbyId = lobbyId;
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
+			console.log("Lobby Created:", lobbyId);
+		}
+	});
+
+	console.log("Player connected:", socket.id);
+
+	// Assign player ID (needs improvement for multiple games)
+	players[socket.id] = { id: socket.id, monsters: [] };
+
+	// Handle player disconnection (needs improvement for game state)
+	socket.on("disconnect", () => {
+		delete players[socket.id];
+
+		// Update player count for the lobby the player belonged to
+		if (lobbies[socket.lobbyId]) {
+			// Check if lobby still exists
+			const lobbyId = socket.lobbyId; // Assuming you store the lobby ID on the socket
+			const playerCount = lobbies[lobbyId].players.length - 1; // Remove disconnected player
+			for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+				if (lobbies[lobbyId].players[i] !== socket.id) {
+					io.to(lobbies[lobbyId].players[i]).emit("player-left", {
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+			lobbies[lobbyId].players = lobbies[lobbyId].players.filter(
+				(playerId) => playerId !== socket.id
+			); // Remove player ID from the lobby's player list
+		}
+	});
+
+	// Store the lobby ID the player joins (assuming it's received)
+	socket.on("join-lobby", (lobbyId) => {
+		socket.lobbyId = lobbyId; // Store the lobby ID for later use (e.g., disconnection)
+	});
+
+	// Placeholder for handling game logic (needs full implementation)
+	socket.on("game-action", (data) => {
+		if (data.action === "finish-turn") {
+			const lobbyId = socket.lobbyId;
+			const currentPlayers = lobbies[lobbyId].players;
+			let currentPlayerIndex = lobbies[lobbyId].currentPlayerIndex; // Assuming it's already defined and initialized to 0
+
+			// Update current player index
+			currentPlayerIndex++;
+
+			// Check if reached the end of players array
+			if (currentPlayerIndex >= currentPlayers.length) {
+				currentPlayerIndex = 0; // Reset to first player
+			}
+
+			// Track completed turns in the current round
+			let completedTurns = lobbies[lobbyId].completedTurns || 0; // Initialize if not set
+			completedTurns++;
+			lobbies[lobbyId].completedTurns = completedTurns;
+
+			lobbies[lobbyId].currentPlayerIndex = currentPlayerIndex;
+
+			// Check if all players finished their turn (round end)
+			if (completedTurns === currentPlayers.length) {
+				lobbies[lobbyId].completedTurns = 0; // Reset completed turns counter
+
+				// Implement logic for starting a new round (optional)
+				// You can increment a currentRound counter or perform other round-based actions
+
+				console.log(`[${lobbyId}] Round ended, starting new round`);
+				for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+					io.to(lobbies[lobbyId].players[i]).emit("round-end", {
+						completedTurns,
+					});
+				}
+			}
+
+			// Broadcast the new current player to all players in the lobby
+			for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+				io.to(lobbies[lobbyId].players[i]).emit(
+					"current-player",
+					currentPlayers[currentPlayerIndex]
+				);
+			}
+			console.log(
+				`[${lobbyId}][${socket.id}] Finishing turn, current player: ${currentPlayers[currentPlayerIndex]}`
+			);
+
+			console.log(
+				`[${lobbyId}][${socket.id}] Finishing turn, current player: ${currentPlayers[currentPlayerIndex]}`
+			);
+		} else if (data.action === "place-character") {
+			console.log(`[${socket.lobbyId}][${socket.id}] Placed a character`);
+		} else if (data.action === "move-character") {
+			console.log(`[${socket.lobbyId}][${socket.id}] Moved a character`);
+		} else if (data.action === "kill-character") {
+			console.log(`[${socket.lobbyId}][${socket.id}] Killed a character`);
+		} else if (data.action === "start-game") {
+			const lobbyId = socket.lobbyId;
+			const currentPlayers = lobbies[lobbyId].players;
+
+			// Check if game isn't already started
+			if (lobbies[lobbyId].gameState !== "Playing") {
+				lobbies[lobbyId].gameState = "Playing";
+
+				// Set the first player's index (assuming players[0] is the first user)
+				lobbies[lobbyId].currentPlayerIndex = 0;
+
+				// Broadcast the current player (first player) to all players in the lobby
+				for (i = 0; i < lobbies[lobbyId].players.length; i++) {
+					io.to(lobbies[lobbyId].players[i]).emit(
+						"current-player",
+						currentPlayers[0]
+					);
+				}
+
+				console.log(
+					`[${lobbyId}][${socket.id}] Starting game, current player: ${currentPlayers[0]}`
+				);
+			}
+		}
+	});
+});
+
+server.listen(3000, () => {
+	console.log("Server listening on port 3000");
+});
