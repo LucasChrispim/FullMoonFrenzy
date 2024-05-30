@@ -1,0 +1,425 @@
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
+		}
+
+		socket.broadcast.emit("list-lobbies", lobbies);
+	});
+
+	console.log(
+  1 change: 1 addition & 0 deletions1  
+public/js/client.js
+Original file line number	Diff line number	Diff line change
+const mainContent = document.querySelector("#mainContent");
+const socket = io("http://127.0.0.1:3000");
+let amountOfPlayersInLobby = 0;
+let currentRound = 1;
+// Generate the Game Grid
+const gameGrid = [];
+let counter = 0;
+for (let y = 0; y < 10; y++) {
+	gameGrid[y] = [];
+	for (let x = 0; x < 10; x++) {
+		gameGrid[y][x] = {
+			x: x,
+			y: y,
+			id: counter,
+			data: {
+				currentCharacter: null,
+				placedBy: null,
+			},
+		};
+		counter++;
+	}
+}
+let savedLobbies = [];
+let activeLobby = {};
+function clearMainContent() {
+	mainContent.innerHTML = "";
+}
+function isCharDigit(n) {
+	return !!n.trim() && n > -1;
+}
+function isCharAlphabet(str) {
+	return str.length === 1 && str.match(/[a-z]/i);
+}
+function setCookie(cname, cvalue, exdays) {
+	const d = new Date();
+	d.setTime(d.getTime() + exdays * 24 * 60 * 60 * 1000);
+	let expires = "expires=" + d.toUTCString();
+	document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+}
+function getCookie(cname) {
+	let name = cname + "=";
+	let decodedCookie = decodeURIComponent(document.cookie);
+	let ca = decodedCookie.split(";");
+	for (let i = 0; i < ca.length; i++) {
+		let c = ca[i];
+		while (c.charAt(0) == " ") {
+			c = c.substring(1);
+		}
+		if (c.indexOf(name) == 0) {
+			return c.substring(name.length, c.length);
+		}
+	}
+	return "";
+}
+function updateGameGridDataById(id, newData) {
+	for (let y = 0; y < gameGrid.length; y++) {
+		for (let x = 0; x < gameGrid[y].length; x++) {
+			if (gameGrid[y][x].id === id) {
+				gameGrid[y][x].data = newData;
+			}
+			counter++;
+		}
+	}
+}
+function updateGameGridDataByCoordinates(sx, sy, newData) {
+	for (let y = 0; y < gameGrid.length; y++) {
+		for (let x = 0; x < gameGrid[y].length; x++) {
+			if (sy === y) {
+				if (sx === x) {
+					gameGrid[y][x].data = newData;
+					console.log("updated");
+				}
+			}
+			counter++;
+		}
+	}
+}
+function addBackToMainMenuButton() {
+	const backToMainMenuButton = document.createElement("p");
+	backToMainMenuButton.className = "top-left-button";
+	backToMainMenuButton.innerText = "Back to Main Menu";
+	backToMainMenuButton.addEventListener("click", () => {
+		displayLobbySelector();
+	});
+	mainContent.appendChild(backToMainMenuButton);
+}
+function addPreferencesButton() {
+	const preferencesButton = document.createElement("p");
+	preferencesButton.className = "top-left-button";
+	preferencesButton.innerText = "Preferences";
+	preferencesButton.addEventListener("click", () => {
+		displayPreferences();
+	});
+	mainContent.appendChild(preferencesButton);
+}
+function displayGrid(grid) {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const gridContainer = document.createElement("div");
+	gridContainer.className = "grid-container";
+	grid.forEach((row) => {
+		row.forEach((cell) => {
+			const cellElement = document.createElement("div");
+			const cellContent = document.createElement("p");
+			cellContent.className = "grid-cell-content";
+			cellElement.className = "grid-cell";
+			if (cell.data.currentCharacter !== null) {
+				cellContent.innerText = cell.data.currentCharacter;
+			} else {
+				cellContent.innerText = "";
+			}
+			// Set grid position based on x and y coordinates
+			cellElement.style.gridColumn = `${cell.x + 1}`; // +1 for 1-based indexing
+			cellElement.style.gridRow = `${cell.y + 1}`; // +1 for 1-based indexing
+			cellElement.appendChild(cellContent);
+			gridContainer.appendChild(cellElement);
+		});
+	});
+	centeredContentContainer.appendChild(gridContainer);
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayCenteredMessage(message) {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const connectingToServerTitle = document.createElement("h1");
+	connectingToServerTitle.innerText = message;
+	centeredContentContainer.appendChild(connectingToServerTitle);
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayWaitingForPlayersScreen(lobbyId) {
+	clearMainContent();
+	addBackToMainMenuButton();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const waitingForPlayersTitle = document.createElement("h1");
+	waitingForPlayersTitle.className = "waiting-for-players-title";
+	waitingForPlayersTitle.innerHTML = `Waiting for Players (${lobbyId})`;
+	const amountOfPlayersLabel = document.createElement("p");
+	amountOfPlayersLabel.className = "amount-of-players";
+	amountOfPlayersLabel.innerText = `0/4 Players joined`;
+	centeredContentContainer.appendChild(waitingForPlayersTitle);
+	centeredContentContainer.appendChild(amountOfPlayersLabel);
+	mainContent.appendChild(centeredContentContainer);
+}
+function updateWaitingForPlayersScreen(amountOfPlayer) {
+	const amountOfPlayersLabel = document.querySelector(".amount-of-players");
+	amountOfPlayersLabel.innerText = `${amountOfPlayer}/4 Players joined`;
+}
+function displayLobbySelector() {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const joinLobbyByIdContainer = document.createElement("div");
+	joinLobbyByIdContainer.className = "join-lobby-by-id-container";
+	const lobbyIdInput = document.createElement("input");
+	lobbyIdInput.placeholder = "Lobby ID";
+	lobbyIdInput.className = "lobby-id-input";
+	const lobbyIdJoinButton = document.createElement("button");
+	lobbyIdJoinButton.className = "join-lobby-button";
+	lobbyIdJoinButton.innerText = "Join";
+	lobbyIdJoinButton.disabled = true;
+	lobbyIdInput.addEventListener("keydown", (event) => {
+		event.preventDefault();
+		if (isCharDigit(event.key)) {
+			lobbyIdInput.value += event.key;
+		}
+		if (event.key === "Backspace")
+			lobbyIdInput.value = lobbyIdInput.value.substring(
+				0,
+				lobbyIdInput.value.length - 1
+			);
+		if (lobbyIdInput.value.length > 0) lobbyIdJoinButton.disabled = false;
+		else lobbyIdJoinButton.disabled = true;
+	});
+	lobbyIdInput.addEventListener("keyup", (event) => {
+		if (event.key === "Enter") {
+			lobbyIdJoinButton.click();
+		}
+	});
+	lobbyIdJoinButton.addEventListener("click", () => {
+		let lobbyId = lobbyIdInput.value;
+		socket.emit("join-lobby", lobbyId);
+	});
+	joinLobbyByIdContainer.append(lobbyIdInput);
+	joinLobbyByIdContainer.append(lobbyIdJoinButton);
+	const createLobbyButton = document.createElement("button");
+	createLobbyButton.className = "create-lobby-button";
+	createLobbyButton.innerText = "Create Lobby";
+	createLobbyButton.style.borderBottom = "0.5px solid";
+	createLobbyButton.style.borderRadius = "10px 10px 0px 0px";
+	createLobbyButton.addEventListener("click", () => {
+		let lobbyId = Math.floor(Math.random() * 99999) + 10000;
+		socket.emit("join-lobby", lobbyId);
+	});
+	const browseLobbiesButton = document.createElement("button");
+	browseLobbiesButton.className = "create-lobby-button";
+	browseLobbiesButton.innerText = "Browse Lobbies";
+	browseLobbiesButton.style.borderRadius = "0px 0px 10px 10px";
+	browseLobbiesButton.addEventListener("click", () => {
+		displayLobbyBrowser();
+	});
+	centeredContentContainer.appendChild(joinLobbyByIdContainer);
+	centeredContentContainer.appendChild(createLobbyButton);
+	centeredContentContainer.appendChild(browseLobbiesButton);
+	addPreferencesButton();
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayLobbyBrowser() {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	if (Object.keys(savedLobbies).length < 1) {
+		const browseLobbiesTitle = document.createElement("h2");
+		browseLobbiesTitle.className = "browse-lobbies-title";
+		browseLobbiesTitle.innerText = "No Lobbies Found!";
+		const backToMainMenuButton = document.createElement("button");
+		backToMainMenuButton.className = "create-lobby-button";
+		backToMainMenuButton.innerText = "Back to Main Menu";
+		backToMainMenuButton.addEventListener("click", () => {
+			displayLobbySelector();
+		});
+		centeredContentContainer.appendChild(browseLobbiesTitle);
+		centeredContentContainer.appendChild(backToMainMenuButton);
+	} else {
+		const lobbyList = document.createElement("ul");
+		for (i = 0; i < Object.keys(savedLobbies).length; i++) {
+			const LobbyListEntry = document.createElement("li");
+			if (i === 0) {
+				LobbyListEntry.style.borderRadius = "10px 10px 0px 0px";
+			} else if (i + 1 === Object.keys(savedLobbies).length) {
+				LobbyListEntry.style.borderRadius = "0px 0px 10px 10px";
+			}
+			if (i + 1 === Object.keys(savedLobbies).length && i === 0) {
+				LobbyListEntry.style.borderRadius = "10px";
+			}
+			if (i + 1 !== Object.keys(savedLobbies).length) {
+				LobbyListEntry.style.borderBottom = "1px solid";
+			}
+			const LobbyListEntryID = document.createElement("p");
+			LobbyListEntryID.className = "lobby-list-lobby-id";
+			LobbyListEntryID.innerText =
+				savedLobbies[Object.keys(savedLobbies)[i]].id;
+			const LobbyListEntryPlayerCount = document.createElement("p");
+			LobbyListEntryPlayerCount.className =
+				"lobby-list-lobby-playercount";
+			LobbyListEntryPlayerCount.innerText = `${
+				savedLobbies[Object.keys(savedLobbies)[i]].players.length
+			}/4`;
+			addBackToMainMenuButton();
+			if (savedLobbies[Object.keys(savedLobbies)[i]].players.length < 4) {
+				LobbyListEntry.addEventListener("click", () => {
+					socket.emit("join-lobby", LobbyListEntryID.innerText);
+				});
+			}
+			LobbyListEntry.appendChild(LobbyListEntryID);
+			LobbyListEntry.appendChild(LobbyListEntryPlayerCount);
+			LobbyListEntry.className = "lobby-list-entry";
+			lobbyList.appendChild(LobbyListEntry);
+		}
+		centeredContentContainer.appendChild(lobbyList);
+	}
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayPlayerList(activePlayer) {
+	const playerList = document.createElement("ul");
+	playerList.className = "player-list";
+	const playerListEntry = document.createElement("li");
+	playerListEntry.innerText = `Round ${currentRound}`;
+	playerListEntry.style.fontWeight = 700;
+	playerListEntry.className = "player-list-entry";
+	playerList.appendChild(playerListEntry);
+	for (i = 0; i < savedLobby.players.length; i++) {
+		const playerListEntry = document.createElement("li");
+		// Include username and active player indicator
+		playerListEntry.innerText = `${savedLobby.players[i].username} ${
+			activePlayer.id === savedLobby.players[i].id ? "(Active)" : ""
+		}`;
+		playerListEntry.className = "player-list-entry";
+		playerList.appendChild(playerListEntry);
+	}
+	mainContent.appendChild(playerList);
+}
+function displayActiveGame(grid, playerWithTurn) {
+	displayGrid(grid);
+	if (socket.id === playerWithTurn.id) {
+		// Add a check here to check if its the players turn
+		const finishTurnContainer = document.createElement("div");
+		finishTurnContainer.className = "finish-turn-container";
+		const finishTurnButton = document.createElement("button");
+		finishTurnButton.className = "finish-turn-button";
+		finishTurnButton.innerText = "Finish Turn";
+		finishTurnButton.addEventListener("click", (event) => {
+			socket.emit("game-action", {
+				action: "finish-turn",
+			});
+		});
+		const vampireButtonDragAndDrop = document.createElement("button");
+		vampireButtonDragAndDrop.className = "monster-drag-button";
+		vampireButtonDragAndDrop.innerText = "V";
+		const wereWolfButtonDragAndDrop = document.createElement("button");
+		wereWolfButtonDragAndDrop.className = "monster-drag-button";
+		wereWolfButtonDragAndDrop.innerText = "W";
+		const ghostButtonDragAndDrop = document.createElement("button");
+		ghostButtonDragAndDrop.className = "monster-drag-button";
+		ghostButtonDragAndDrop.innerText = "G";
+		finishTurnContainer.appendChild(vampireButtonDragAndDrop);
+		finishTurnContainer.appendChild(wereWolfButtonDragAndDrop);
+		finishTurnContainer.appendChild(ghostButtonDragAndDrop);
+		finishTurnContainer.appendChild(finishTurnButton);
+		mainContent.appendChild(finishTurnContainer);
+	}
+	displayPlayerList(playerWithTurn);
+}
+function displayPreferences() {
+	clearMainContent();
+	const usernameSettingsContainer = document.createElement("div");
+	usernameSettingsContainer.className = "join-lobby-by-id-container";
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const usernameInput = document.createElement("input");
+	usernameInput.placeholder = "Username";
+	usernameInput.className = "lobby-id-input";
+	if (getCookie("localUsername").length > 0) {
+		usernameInput.value = getCookie("localUsername");
+	}
+	const saveUsernameButton = document.createElement("button");
+	saveUsernameButton.className = "join-lobby-button";
+	saveUsernameButton.innerText = "Save";
+	saveUsernameButton.disabled = true;
+	usernameInput.addEventListener("keydown", (event) => {
+		event.preventDefault();
+		if (isCharAlphabet(event.key)) {
+			usernameInput.value += event.key;
+		}
+		if (event.key === "Backspace")
+			usernameInput.value = usernameInput.value.substring(
+				0,
+				usernameInput.value.length - 1
+			);
+		if (usernameInput.value.length > 0) {
+			if (usernameInput.value !== getCookie("localUsername"))
+				saveUsernameButton.disabled = false;
+			if (usernameInput.value === getCookie("localUsername"))
+				saveUsernameButton.disabled = true;
+		} else {
+			saveUsernameButton.disabled = true;
+		}
+	});
+	saveUsernameButton.addEventListener("click", (event) => {
+		socket.emit("change-username", usernameInput.value);
+		setCookie("localUsername", usernameInput.value, 1000);
+	});
+	usernameSettingsContainer.appendChild(usernameInput);
+	usernameSettingsContainer.appendChild(saveUsernameButton);
+	centeredContentContainer.appendChild(usernameSettingsContainer);
+	addBackToMainMenuButton();
+	mainContent.appendChild(centeredContentContainer);
+}
+function startGame() {
+	console.log("Starting Game");
+	socket.emit("game-action", {
+		action: "start-game",
+	});
+}
+socket.once("connect", () => {
+	console.log("Socket connected");
+	displayLobbySelector();
+});
+socket.on("lobby-joined", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	console.log(data);
+	if (data.playerCount === 4) {
+		savedLobby = data;
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+		// Access and potentially display username
+		const joinedPlayerUsername =
+			data.players[data.players.length - 1].username;
+		console.log(`New player joined with username: ${joinedPlayerUsername}`);
+	}
+});
+socket.on("player-joined", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	if (data.playerCount === 4) {
+		savedLobby = data;
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+	}
+});
+socket.on("player-left", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	updateWaitingForPlayersScreen(data.playerCount);
+});
+socket.on("lobby-created", (lobbyId) => {
+	displayWaitingForPlayersScreen(lobbyId);
+	updateWaitingForPlayersScreen(1);
+});
+
+socket.on("list-lobbies", (lobbies) => {
+	console.log("got new lobbies");
+	savedLobbies = lobbies;
+});
+
+socket.on("current-player", (playerWithTurn) => {
+	console.log("Current Player");
+	displayActiveGame(gameGrid, playerWithTurn);
+});
+socket.on("round-end", () => {
+	currentRound++;
+});
