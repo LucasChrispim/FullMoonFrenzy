@@ -1,0 +1,1080 @@
+const http = require("http");
+const express = require("express");
+const path = require("path");
+const { Server } = require("socket.io");
+const { generateUsername } = require("unique-username-generator");
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+// Serve static files from the 'public' directory
+app.use(express.static(path.join(__dirname, "public")));
+// Handle all requests by serving the index.html file
+app.get("*", (req, res) => {
+	res.sendFile(path.join(__dirname, "public/index.html"));
+});
+// Track connected players (very basic, needs improvement)
+let players = {};
+let lobbies = {}; // Object to store lobby information
+io.on("connection", (socket) => {
+	socket.username = generateUsername();
+	socket.emit("list-lobbies", lobbies);
+	socket.on("join-lobby", (lobbyId) => {
+		console.log(`[${socket.username}] Joined a Lobby`);
+		if (lobbies[lobbyId]) {
+			// Lobby exists, add player
+			lobbies[lobbyId].players.push({
+				id: socket.id,
+				username: socket.username,
+			});
+			lobbies[lobbyId].gameState = "Waiting for Players";
+			const playerCount = Object.keys(lobbies[lobbyId].players).length;
+			// Notify other players except the joining player
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					io.to(player.id).emit("player-joined", {
+						...lobbies[lobbyId],
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+			// Send lobby state and information to the joining player
+			socket.emit("lobby-joined", {
+				...lobbies[lobbyId],
+				playerCount,
+				lobbyId,
+			});
+		} else {
+			// Create the server side game grid
+			let gameGrid = [];
+			let counter = 0;
+			for (let y = 0; y < 10; y++) {
+				gameGrid[y] = [];
+				for (let x = 0; x < 10; x++) {
+					gameGrid[y][x] = {
+						x: x,
+						y: y,
+						id: counter,
+						data: {
+							currentCharacter: "H",
+							placedBy: null,
+						},
+					};
+					counter++;
+				}
+			}
+			// Create a new lobby
+			lobbies[lobbyId] = {
+				id: lobbyId,
+				gameState: "Waiting for Player",
+				players: [
+					{
+						id: socket.id,
+						username: socket.username,
+					},
+				],
+				gameGrid: gameGrid,
+				// Add other lobby state properties
+			};
+			socket.lobbyId = lobbyId;
+			// Inform player about new lobby (optional)
+			socket.emit("lobby-created", lobbyId);
+		}
+		socket.broadcast.emit("list-lobbies", lobbies);
+	});
+	socket.on("leave-lobby", (lobbyId) => {
+		if (lobbies[socket.lobbyId]) {
+			// Check if lobby still exists
+			const lobbyId = socket.lobbyId; // Assuming you store the lobby ID on the socket
+			const playerCount =
+				Object.keys(lobbies[lobbyId].players).length - 1;
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					io.to(player.id).emit("player-left", {
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+			let i = 0;
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id === socket.id) {
+					lobbies[lobbyId].players.splice(i, 1);
+					break;
+				}
+				i++;
+			} // Remove the player from the lobby element, if he disconnects
+			// Delete the lobby if nobody is left
+			if (Object.keys(lobbies[lobbyId].players).length === 0) {
+				delete lobbies[lobbyId];
+				socket.broadcast.emit("list-lobbies", lobbies);
+			}
+		}
+	});
+	console.log(
+		"Player connected:",
+		socket.id,
+		"randomly given username",
+		socket.username
+	);
+	// Assign player ID (needs improvement for multiple games)
+	players[socket.id] = { id: socket.id, monsters: [] };
+	// Handle player disconnection (needs improvement for game state)
+	socket.on("disconnect", () => {
+		delete players[socket.id];
+		// Update player count for the lobby the player belonged to
+		if (lobbies[socket.lobbyId]) {
+			// Check if lobby still exists
+			const lobbyId = socket.lobbyId; // Assuming you store the lobby ID on the socket
+			const playerCount =
+				Object.keys(lobbies[lobbyId].players).length - 1;
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id !== socket.id) {
+					io.to(player.id).emit("player-left", {
+						playerCount,
+						lobbyId,
+					});
+				}
+			}
+			let i = 0;
+			for (const player of lobbies[lobbyId].players) {
+				if (player.id === socket.id) {
+					lobbies[lobbyId].players.splice(i, 1);
+					break;
+				}
+				i++;
+			} // Remove the player from the lobby element, if he disconnects
+			// Delete the lobby if nobody is left
+			if (Object.keys(lobbies[lobbyId].players).length === 0) {
+				delete lobbies[lobbyId];
+				socket.broadcast.emit("list-lobbies", lobbies);
+			}
+		}
+	});
+	// Store the lobby ID the player joins (assuming it's received)
+	socket.on("join-lobby", (lobbyId) => {
+		socket.lobbyId = lobbyId; // Store the lobby ID for later use (e.g., disconnection)
+	});
+	socket.on("change-username", (newUsername) => {
+		socket.username = newUsername;
+	});
+	// Placeholder for handling game logic (needs full implementation)
+	socket.on("game-action", (data) => {
+		if (data.action === "finish-turn") {
+			const lobbyId = socket.lobbyId;
+			const currentPlayers = lobbies[lobbyId].players;
+			let currentPlayerIndex = lobbies[lobbyId].currentPlayerIndex; // Assuming it's already defined and initialized to 0
+
+			for (const player of lobbies[lobbyId].players) {
+				io.to(player.id).emit("update-grid", data.newGameGrid);
+			}
+
+			// Update current player index
+			currentPlayerIndex++;
+
+			// Check if reached the end of players array
+			if (currentPlayerIndex >= currentPlayers.length) {
+				currentPlayerIndex = 0; // Reset to first player
+			}
+			// Track completed turns in the current round
+			let completedTurns = lobbies[lobbyId].completedTurns || 0; // Initialize if not set
+			completedTurns++;
+			lobbies[lobbyId].completedTurns = completedTurns;
+			lobbies[lobbyId].currentPlayerIndex = currentPlayerIndex;
+			// Check if all players finished their turn (round end)
+			if (completedTurns === currentPlayers.length) {
+				lobbies[lobbyId].completedTurns = 0; // Reset completed turns counter
+				// Implement logic for starting a new round (optional)
+				// You can increment a currentRound counter or perform other round-based actions
+				console.log(`[${lobbyId}] Round ended, starting new round`);
+				for (const player of lobbies[lobbyId].players) {
+					io.to(player.id).emit("round-end", {
+						completedTurns,
+					});
+				}
+			}
+			// Broadcast the new current player to all players in the lobby
+			for (const player of lobbies[lobbyId].players) {
+				io.to(player.id).emit(
+					"current-player",
+					currentPlayers[currentPlayerIndex]
+				);
+			}
+			console.log(
+				`[${lobbyId}][${socket.id}] Finishing turn, current player: ${currentPlayers[currentPlayerIndex]}`
+			);
+			console.log(
+				`[${lobbyId}][${socket.id}] Finishing turn, current player: ${currentPlayers[currentPlayerIndex]}`
+			);
+		} else if (data.action === "place-character") {
+			console.log(`[${socket.lobbyId}][${socket.id}] Placed a character`);
+		} else if (data.action === "move-character") {
+			console.log(`[${socket.lobbyId}][${socket.id}] Moved a character`);
+		} else if (data.action === "kill-character") {
+			console.log(`[${socket.lobbyId}][${socket.id}] Killed a character`);
+		} else if (data.action === "start-game") {
+			const lobbyId = socket.lobbyId;
+			const currentPlayers = lobbies[lobbyId].players;
+			// Check if game isn't already started
+			if (lobbies[lobbyId].gameState !== "Playing") {
+				lobbies[lobbyId].gameState = "Playing";
+				// Set the first player's index (assuming players[0] is the first user)
+				lobbies[lobbyId].currentPlayerIndex = 0;
+				// Broadcast the current player (first player) to all players in the lobby
+				for (const player of lobbies[lobbyId].players) {
+					io.to(player.id).emit("current-player", currentPlayers[0]);
+				}
+				console.log(
+					`[${lobbyId}][${socket.id}] Starting game, current player: ${currentPlayers[0]}`
+				);
+			}
+		}
+	});
+});
+server.listen(3000, () => {
+	console.log("Server listening on port 3000");
+});
+  20 changes: 18 additions & 2 deletions20  
+public/css/style.css
+Original file line number	Diff line number	Diff line change
+body {
+    background-color: hsl(0, 0%, 12%);
+    color: white;
+    margin: 0;
+    padding: 0;
+    top: 0px;
+    position: absolute;
+    overflow: hidden;
+    width: 100%;
+    font-family: Optima, Candara, 'Noto Sans', source-sans-pro, sans-serif; 
+}
+.grid-container {
+    display: grid;
+    gap: 0;
+    border: 4px solid white;
+    grid-template-columns: repeat(10, 0fr);
+    grid-template-rows: repeat(10, 0fr);
+}
+.grid-cell {
+    border: 1px solid white;
+    gap: 0;
+    height: 50px;
+    width: 50px;
+}
+.waiting-for-players-title {
+    margin-bottom: 0px;
+}
+.centered-content-container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+.join-lobby-by-id-container {
+    display: flex;
+    margin-bottom: 10px;
+}
+.lobby-id-input {
+    color: white;
+    background-color: transparent;
+    border: 1px solid #6e6e6e;
+    border-radius: 10px 0px 0px 10px;
+    padding: 3px;
+    padding-left: 5px;
+    &:active {
+        border: none;
+    }
+    &:focus {
+        outline: none;
+        border: 1px solid #898989;
+    }
+}
+.lobby-selector-title {
+    margin-bottom: 20px;
+}
+.join-lobby-button {
+    border-radius: 0px 10px 10px 0px;
+    background-color: #6e6e6e;
+    border: none;
+    padding: 0px 10px;
+    transition: 0.3s;
+    
+    &:enabled {
+        cursor: pointer;
+        color: white;
+    }
+}
+.join-lobby-button:disabled {
+    color: #ffffff4a;
+}
+.create-lobby-button {
+    width: 220px;
+    border-radius: 10px;
+    background-color: #6e6e6e;
+    border: none;
+    color: white;
+    padding: 5px 10px;
+    cursor: pointer;
+    opacity: 0.4;
+    transition: 0.3s;
+}
+.create-lobby-button:hover {
+    opacity: 1;
+}
+.lobby-list-entry {
+    display: flex;
+    flex-direction: row;
+    background-color: #6e6e6e;
+    color: white;
+    width: 300px;
+    cursor: pointer;
+    transition: 0.3s;
+    opacity: 0.4;
+}
+.lobby-list-entry:hover {
+    opacity: 1;
+}
+.lobby-list-lobby-id {
+    flex: 5;
+    width: 200px;
+    padding-left: 15px;
+    margin-top: 5px;
+    margin-bottom: 5px;
+}
+.lobby-list-lobby-playercount {
+    margin-top: 5px;
+    flex: 0.45;
+  padding-right: 10px;
+    margin-bottom: 5px;
+    padding-right: 10px;
+}
+.top-left-button {
+    z-index: 99;
+    margin: 15px;
+    font-size: 0.9rem;
+    color: #898989;
+    position: absolute;
+    -webkit-user-select: none; /* Safari */
+    -ms-user-select: none; /* IE 10 and IE 11 */
+    user-select: none; /* Standard syntax */
+    cursor: pointer;
+    transition: 0.3s;
+}
+.top-left-button:hover {
+    color: #c4c1c1;
+}
+
+.grid-cell-content {
+    text-align: center;
+    margin: 25%;
+    align-content: center;
+    margin: 0px;
+    height: 100%;
+}
+
+.player-list {
+    list-style: none;
+    z-index: 98;
+    position:absolute;
+    background-color: #272727;
+    border-radius: 10px;
+    right: 0px;
+    top: 40%;
+    margin-right: 40px;
+    width: 250px;
+    padding: 0;
+}
+.player-list-entry:not(:last-child) {
+    border-bottom: 1px solid #5555;
+}
+.player-list-entry {
+    padding: 5px;
+}
+.finish-turn-button {
+    background-color: #444;
+    border: none;
+    color: white;
+    padding: 7.5px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    width: 100px;
+}
+.finish-turn-container {
+    position: absolute;
+    bottom: 100px;
+    z-index: 97;
+    height: 35px;
+    width: 100%;
+    justify-content: center;
+    align-items: center;
+    display: flex;
+}
+
+.monster-drag-button {
+    margin-right: 10px;
+    background-color: #444;
+    border: none;
+    color: white;
+    padding: 7.5px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.monster-drag-button:active, .monster-drag-button:focus {
+    &:enabled {
+        border: 0.2px solid white;
+    }
+}
+
+.monster-drag-button {
+    margin-right: 10px;
+    background-color: #444;
+    border: none;
+    color: white;
+    padding: 7.5px 12px;
+    border-radius: 10px;
+    cursor: grab;
+}
+.monster-drag-button:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+  116 changes: 115 additions & 1 deletion116  
+public/js/client.js
+Original file line number	Diff line number	Diff line change
+@@ -1,10 +1,14 @@
+const mainContent = document.querySelector("#mainContent");
+const socket = io("http://127.0.0.1:3000");
+
+let amountOfPlayersInLobby = 0;
+let currentRound = 1;
+let selectedMonster = null;
+let selectedMonsterIsNew = false;
+let placedInThisRound = [];
+
+// Generate the Game Grid
+const gameGrid = [];
+let gameGrid = [];
+let counter = 0;
+for (let y = 0; y < 10; y++) {
+	gameGrid[y] = [];
+	for (let x = 0; x < 10; x++) {
+		gameGrid[y][x] = {
+			x: x,
+			y: y,
+			id: counter,
+			data: {
+				currentCharacter: null,
+				placedBy: null,
+			},
+		};
+		counter++;
+	}
+}
+let savedLobbies = [];
+let activeLobby = {};
+function clearMainContent() {
+	mainContent.innerHTML = "";
+}
+function isCharDigit(n) {
+	return !!n.trim() && n > -1;
+}
+function isCharAlphabet(str) {
+	return str.length === 1 && str.match(/[a-z]/i);
+}
+function setCookie(cname, cvalue, exdays) {
+	const d = new Date();
+	d.setTime(d.getTime() + exdays * 24 * 60 * 60 * 1000);
+	let expires = "expires=" + d.toUTCString();
+	document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+}
+function getCookie(cname) {
+	let name = cname + "=";
+	let decodedCookie = decodeURIComponent(document.cookie);
+	let ca = decodedCookie.split(";");
+	for (let i = 0; i < ca.length; i++) {
+		let c = ca[i];
+		while (c.charAt(0) == " ") {
+			c = c.substring(1);
+		}
+		if (c.indexOf(name) == 0) {
+			return c.substring(name.length, c.length);
+		}
+	}
+	return "";
+}
+
+function highlightGameGridCellByCoordinates(sx, sy) {
+	let allGridCells = document.querySelectorAll(".grid-cell");
+	for (const gridCell of allGridCells) {
+		if (gridCell.style.gridArea === `${sx + 1} / ${sy + 1}`) {
+			gridCell.style.border = "1px solid #00ffe9";
+			gridCell.style.background = "#20716a2e";
+		}
+	}
+}
+
+function removeAllHighlighting() {
+	let allGridCells = document.querySelectorAll(".grid-cell");
+	for (const gridCell of allGridCells) {
+		gridCell.style.border = "1px solid white";
+		gridCell.style.background = "none";
+	}
+}
+
+function makeCellClickableByCoordinates(sx, sy, shouldHighlight) {
+	let allGridCells = document.querySelectorAll(".grid-cell");
+	for (const gridCell of allGridCells) {
+		if (gridCell.style.gridArea === `${sx + 1} / ${sy + 1}`) {
+			gridCell.addEventListener("click", () => {
+				// Only allow placing a monster, if the field is empty. Placing on top of each other does not work
+				if (
+					selectedMonster !== null &&
+					gameGrid[sx][sy].data.currentCharacter === null
+				) {
+					gridCell.style.cursor = "pointer";
+					gameGrid[sx][sy].data.currentCharacter = selectedMonster;
+					gameGrid[sx][sy].data.placedBy = socket.id;
+					let gridCellContents =
+						gridCell.querySelector(".grid-cell-content");
+					gridCellContents.innerText = selectedMonster;
+					if (
+						selectedMonster === "V" &&
+						selectedMonsterIsNew === true
+					) {
+						document.querySelector(
+							"#new-vampire-button"
+						).disabled = true;
+					}
+
+					if (
+						selectedMonster === "W" &&
+						selectedMonsterIsNew === true
+					) {
+						document.querySelector(
+							"#new-werewolf-button"
+						).disabled = true;
+					}
+
+					if (
+						selectedMonster === "G" &&
+						selectedMonsterIsNew === true
+					) {
+						document.querySelector(
+							"#new-ghost-button"
+						).disabled = true;
+					}
+					selectedMonster = null;
+					selectedMonsterIsNew = false;
+				}
+
+				removeAllHighlighting();
+				makeNoCellsClickable();
+			});
+		}
+	}
+}
+
+function makeNoCellsClickable() {
+	let allGridCells = document.querySelectorAll(".grid-cell");
+	for (const gridCell of allGridCells) {
+		gridCell.style.cursor = "default";
+		gridCell.replaceWith(gridCell);
+	}
+}
+
+function updateGameGridDataById(id, newData) {
+	for (let y = 0; y < gameGrid.length; y++) {
+		for (let x = 0; x < gameGrid[y].length; x++) {
+			if (gameGrid[y][x].id === id) {
+				gameGrid[y][x].data = newData;
+			}
+			counter++;
+		}
+	}
+}
+function updateGameGridDataByCoordinates(sx, sy, newData) {
+	for (let y = 0; y < gameGrid.length; y++) {
+		for (let x = 0; x < gameGrid[y].length; x++) {
+			if (sy === y) {
+				if (sx === x) {
+					gameGrid[y][x].data = newData;
+					console.log("updated");
+				}
+			}
+			counter++;
+		}
+	}
+}
+function addBackToMainMenuButton(lobbyId = null) {
+	const backToMainMenuButton = document.createElement("p");
+	backToMainMenuButton.className = "top-left-button";
+	backToMainMenuButton.innerText = "Back to Main Menu";
+	backToMainMenuButton.addEventListener("click", () => {
+		socket.emit("leave-lobby", lobbyId);
+		displayLobbySelector();
+	});
+	mainContent.appendChild(backToMainMenuButton);
+}
+function addPreferencesButton() {
+	const preferencesButton = document.createElement("p");
+	preferencesButton.className = "top-left-button";
+	preferencesButton.innerText = "Preferences";
+	preferencesButton.addEventListener("click", () => {
+		displayPreferences();
+	});
+	mainContent.appendChild(preferencesButton);
+}
+function displayGrid(grid) {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const gridContainer = document.createElement("div");
+	gridContainer.className = "grid-container";
+	grid.forEach((row) => {
+		row.forEach((cell) => {
+			const cellElement = document.createElement("div");
+			const cellContent = document.createElement("p");
+			cellContent.className = "grid-cell-content";
+			cellElement.className = "grid-cell";
+			if (cell.data.currentCharacter !== null) {
+				cellContent.innerText = cell.data.currentCharacter;
+			} else {
+				cellContent.innerText = "";
+			}
+			// Set grid position based on x and y coordinates
+			cellElement.style.gridColumn = `${cell.x + 1}`; // +1 for 1-based indexing
+			cellElement.style.gridRow = `${cell.y + 1}`; // +1 for 1-based indexing
+			cellElement.appendChild(cellContent);
+			gridContainer.appendChild(cellElement);
+		});
+	});
+	centeredContentContainer.appendChild(gridContainer);
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayCenteredMessage(message) {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const connectingToServerTitle = document.createElement("h1");
+	connectingToServerTitle.innerText = message;
+	centeredContentContainer.appendChild(connectingToServerTitle);
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayWaitingForPlayersScreen(lobbyId) {
+	clearMainContent();
+	addBackToMainMenuButton(lobbyId);
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const waitingForPlayersTitle = document.createElement("h1");
+	waitingForPlayersTitle.className = "waiting-for-players-title";
+	waitingForPlayersTitle.innerHTML = `Waiting for Players (${lobbyId})`;
+	const amountOfPlayersLabel = document.createElement("p");
+	amountOfPlayersLabel.className = "amount-of-players";
+	amountOfPlayersLabel.innerText = `0/4 Players joined`;
+	centeredContentContainer.appendChild(waitingForPlayersTitle);
+	centeredContentContainer.appendChild(amountOfPlayersLabel);
+	mainContent.appendChild(centeredContentContainer);
+}
+function updateWaitingForPlayersScreen(amountOfPlayer) {
+	const amountOfPlayersLabel = document.querySelector(".amount-of-players");
+	amountOfPlayersLabel.innerText = `${amountOfPlayer}/4 Players joined`;
+}
+function displayLobbySelector() {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const joinLobbyByIdContainer = document.createElement("div");
+	joinLobbyByIdContainer.className = "join-lobby-by-id-container";
+	const lobbyIdInput = document.createElement("input");
+	lobbyIdInput.placeholder = "Lobby ID";
+	lobbyIdInput.className = "lobby-id-input";
+	const lobbyIdJoinButton = document.createElement("button");
+	lobbyIdJoinButton.className = "join-lobby-button";
+	lobbyIdJoinButton.innerText = "Join";
+	lobbyIdJoinButton.disabled = true;
+	lobbyIdInput.addEventListener("keydown", (event) => {
+		event.preventDefault();
+		if (isCharDigit(event.key)) {
+			lobbyIdInput.value += event.key;
+		}
+		if (event.key === "Backspace")
+			lobbyIdInput.value = lobbyIdInput.value.substring(
+				0,
+				lobbyIdInput.value.length - 1
+			);
+		if (lobbyIdInput.value.length > 0) lobbyIdJoinButton.disabled = false;
+		else lobbyIdJoinButton.disabled = true;
+	});
+	lobbyIdInput.addEventListener("keyup", (event) => {
+		if (event.key === "Enter") {
+			lobbyIdJoinButton.click();
+		}
+	});
+	lobbyIdJoinButton.addEventListener("click", () => {
+		let lobbyId = lobbyIdInput.value;
+		socket.emit("join-lobby", lobbyId);
+	});
+	joinLobbyByIdContainer.append(lobbyIdInput);
+	joinLobbyByIdContainer.append(lobbyIdJoinButton);
+	const createLobbyButton = document.createElement("button");
+	createLobbyButton.className = "create-lobby-button";
+	createLobbyButton.innerText = "Create Lobby";
+	createLobbyButton.style.borderBottom = "0.5px solid";
+	createLobbyButton.style.borderRadius = "10px 10px 0px 0px";
+	createLobbyButton.addEventListener("click", () => {
+		let lobbyId = Math.floor(Math.random() * 99999) + 10000;
+		socket.emit("join-lobby", lobbyId);
+	});
+	const browseLobbiesButton = document.createElement("button");
+	browseLobbiesButton.className = "create-lobby-button";
+	browseLobbiesButton.innerText = "Browse Lobbies";
+	browseLobbiesButton.style.borderRadius = "0px 0px 10px 10px";
+	browseLobbiesButton.addEventListener("click", () => {
+		displayLobbyBrowser();
+	});
+	centeredContentContainer.appendChild(joinLobbyByIdContainer);
+	centeredContentContainer.appendChild(createLobbyButton);
+	centeredContentContainer.appendChild(browseLobbiesButton);
+	addPreferencesButton();
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayLobbyBrowser() {
+	clearMainContent();
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	if (Object.keys(savedLobbies).length < 1) {
+		const browseLobbiesTitle = document.createElement("h2");
+		browseLobbiesTitle.className = "browse-lobbies-title";
+		browseLobbiesTitle.innerText = "No Lobbies Found!";
+		const backToMainMenuButton = document.createElement("button");
+		backToMainMenuButton.className = "create-lobby-button";
+		backToMainMenuButton.innerText = "Back to Main Menu";
+		backToMainMenuButton.addEventListener("click", () => {
+			displayLobbySelector();
+		});
+		centeredContentContainer.appendChild(browseLobbiesTitle);
+		centeredContentContainer.appendChild(backToMainMenuButton);
+	} else {
+		const lobbyList = document.createElement("ul");
+		for (i = 0; i < Object.keys(savedLobbies).length; i++) {
+			const LobbyListEntry = document.createElement("li");
+			if (i === 0) {
+				LobbyListEntry.style.borderRadius = "10px 10px 0px 0px";
+			} else if (i + 1 === Object.keys(savedLobbies).length) {
+				LobbyListEntry.style.borderRadius = "0px 0px 10px 10px";
+			}
+			if (i + 1 === Object.keys(savedLobbies).length && i === 0) {
+				LobbyListEntry.style.borderRadius = "10px";
+			}
+			if (i + 1 !== Object.keys(savedLobbies).length) {
+				LobbyListEntry.style.borderBottom = "1px solid";
+			}
+			const LobbyListEntryID = document.createElement("p");
+			LobbyListEntryID.className = "lobby-list-lobby-id";
+			LobbyListEntryID.innerText =
+				savedLobbies[Object.keys(savedLobbies)[i]].id;
+			const LobbyListEntryPlayerCount = document.createElement("p");
+			LobbyListEntryPlayerCount.className =
+				"lobby-list-lobby-playercount";
+			LobbyListEntryPlayerCount.innerText = `${
+				savedLobbies[Object.keys(savedLobbies)[i]].players.length
+			}/4`;
+			addBackToMainMenuButton();
+			if (savedLobbies[Object.keys(savedLobbies)[i]].players.length < 4) {
+				LobbyListEntry.addEventListener("click", () => {
+					socket.emit("join-lobby", LobbyListEntryID.innerText);
+				});
+			}
+			LobbyListEntry.appendChild(LobbyListEntryID);
+			LobbyListEntry.appendChild(LobbyListEntryPlayerCount);
+			LobbyListEntry.className = "lobby-list-entry";
+			lobbyList.appendChild(LobbyListEntry);
+		}
+		centeredContentContainer.appendChild(lobbyList);
+	}
+	mainContent.appendChild(centeredContentContainer);
+}
+function displayPlayerList(activePlayer) {
+	const playerList = document.createElement("ul");
+	playerList.className = "player-list";
+	const playerListEntry = document.createElement("li");
+	playerListEntry.innerText = `Round ${currentRound}`;
+	playerListEntry.style.fontWeight = 700;
+	playerListEntry.className = "player-list-entry";
+	playerList.appendChild(playerListEntry);
+	for (i = 0; i < savedLobby.players.length; i++) {
+		const playerListEntry = document.createElement("li");
+		// Include username and active player indicator
+		playerListEntry.innerText = `${savedLobby.players[i].username} ${
+			activePlayer.id === savedLobby.players[i].id ? "(Active)" : ""
+		}`;
+		playerListEntry.className = "player-list-entry";
+		playerList.appendChild(playerListEntry);
+	}
+	mainContent.appendChild(playerList);
+}
+
+function makeAvailableCellsClickable(newMonster) {
+	if (newMonster === true) {
+		for (i = 0; i < gameGrid[0].length; i++) {
+			highlightGameGridCellByCoordinates(gameGrid[0].length - 1, i, true);
+			makeCellClickableByCoordinates(gameGrid[0].length - 1, i, true);
+		}
+	}
+}
+
+function displayActiveGame(grid, playerWithTurn) {
+	displayGrid(grid);
+
+	if (socket.id === playerWithTurn.id) {
+		// Add a check here to check if its the players turn
+		const finishTurnContainer = document.createElement("div");
+		finishTurnContainer.className = "finish-turn-container";
+		const finishTurnButton = document.createElement("button");
+		finishTurnButton.className = "finish-turn-button";
+		finishTurnButton.innerText = "Finish Turn";
+		finishTurnButton.addEventListener("click", (event) => {
+			socket.emit("game-action", {
+				action: "finish-turn",
+				newGameGrid: gameGrid,
+			});
+		});
+
+		const vampireButtonDragAndDrop = document.createElement("button");
+		vampireButtonDragAndDrop.className = "monster-drag-button";
+		vampireButtonDragAndDrop.id = "new-vampire-button";
+		vampireButtonDragAndDrop.innerText = "V";
+
+		const wereWolfButtonDragAndDrop = document.createElement("button");
+		wereWolfButtonDragAndDrop.className = "monster-drag-button";
+		wereWolfButtonDragAndDrop.id = "new-werewolf-button";
+		wereWolfButtonDragAndDrop.innerText = "W";
+
+		const ghostButtonDragAndDrop = document.createElement("button");
+		ghostButtonDragAndDrop.className = "monster-drag-button";
+		ghostButtonDragAndDrop.id = "new-ghost-button";
+		ghostButtonDragAndDrop.innerText = "G";
+
+		finishTurnContainer.appendChild(vampireButtonDragAndDrop);
+		finishTurnContainer.appendChild(wereWolfButtonDragAndDrop);
+		finishTurnContainer.appendChild(ghostButtonDragAndDrop);
+		finishTurnContainer.appendChild(finishTurnButton);
+		mainContent.appendChild(finishTurnContainer);
+
+		let spawnNewMonsterButtons = document.querySelectorAll(
+			".monster-drag-button"
+		);
+
+		spawnNewMonsterButtons.forEach(function (elem) {
+			elem.addEventListener("click", function () {
+				selectedMonster = elem.innerText;
+				selectedMonsterIsNew = true;
+				makeAvailableCellsClickable(true);
+			});
+		});
+	}
+
+	displayPlayerList(playerWithTurn);
+}
+function displayPreferences() {
+	clearMainContent();
+	const usernameSettingsContainer = document.createElement("div");
+	usernameSettingsContainer.className = "join-lobby-by-id-container";
+	const centeredContentContainer = document.createElement("div");
+	centeredContentContainer.className = "centered-content-container";
+	const usernameInput = document.createElement("input");
+	usernameInput.placeholder = "Username";
+	usernameInput.className = "lobby-id-input";
+	if (getCookie("localUsername").length > 0) {
+		usernameInput.value = getCookie("localUsername");
+	}
+	const saveUsernameButton = document.createElement("button");
+	saveUsernameButton.className = "join-lobby-button";
+	saveUsernameButton.innerText = "Save";
+	saveUsernameButton.disabled = true;
+	usernameInput.addEventListener("keydown", (event) => {
+		event.preventDefault();
+		if (isCharAlphabet(event.key)) {
+			usernameInput.value += event.key;
+		}
+		if (event.key === "Backspace")
+			usernameInput.value = usernameInput.value.substring(
+				0,
+				usernameInput.value.length - 1
+			);
+		if (usernameInput.value.length > 0) {
+			if (usernameInput.value !== getCookie("localUsername"))
+				saveUsernameButton.disabled = false;
+			if (usernameInput.value === getCookie("localUsername"))
+				saveUsernameButton.disabled = true;
+		} else {
+			saveUsernameButton.disabled = true;
+		}
+	});
+	saveUsernameButton.addEventListener("click", (event) => {
+		socket.emit("change-username", usernameInput.value);
+		setCookie("localUsername", usernameInput.value, 1000);
+	});
+	usernameSettingsContainer.appendChild(usernameInput);
+	usernameSettingsContainer.appendChild(saveUsernameButton);
+	centeredContentContainer.appendChild(usernameSettingsContainer);
+	addBackToMainMenuButton();
+	mainContent.appendChild(centeredContentContainer);
+}
+function startGame() {
+	console.log("Starting Game");
+	socket.emit("game-action", {
+		action: "start-game",
+	});
+}
+socket.once("connect", () => {
+	console.log("Socket connected");
+	displayLobbySelector();
+});
+socket.on("lobby-joined", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	console.log(data);
+	if (data.playerCount === 4) {
+		savedLobby = data;
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+		// Access and potentially display username
+		const joinedPlayerUsername =
+			data.players[data.players.length - 1].username;
+		console.log(`New player joined with username: ${joinedPlayerUsername}`);
+	}
+});
+socket.on("player-joined", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	if (data.playerCount === 4) {
+		savedLobby = data;
+		startGame();
+	} else {
+		updateWaitingForPlayersScreen(data.playerCount); // Update display with received count
+	}
+});
+socket.on("player-left", (data) => {
+	displayWaitingForPlayersScreen(data.lobbyId);
+	updateWaitingForPlayersScreen(data.playerCount);
+});
+socket.on("lobby-created", (lobbyId) => {
+	displayWaitingForPlayersScreen(lobbyId);
+	updateWaitingForPlayersScreen(1);
+});
+socket.on("list-lobbies", (lobbies) => {
+	console.log("got new lobbies");
+	savedLobbies = lobbies;
+	if (
+		document.querySelector(".lobby-list-lobby-id") !== null ||
+		document.querySelector(".browse-lobbies-title") !== null
+	)
+		displayLobbyBrowser();
+});
+socket.on("current-player", (playerWithTurn) => {
+	console.log("Current Player");
+	displayActiveGame(gameGrid, playerWithTurn);
+});
+
+socket.on("round-end", () => {
+	placedInThisRound = [];
+	selectedMonster = null;
+	currentRound++;
+});
+
+socket.on("update-grid", (newGameGrid) => {
+	gameGrid = newGameGrid;
+});
+ 87 changes: 87 additions & 0 deletions87  
+public/tes.html
+Original file line number	Diff line number	Diff line change
+@@ -0,0 +1,87 @@
+<style>
+	#grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr); /* Adjust columns as needed */
+		grid-gap: 10px; /* Optional spacing between grid cells */
+	}
+
+	.grid-cell {
+		height: 50px;
+		width: 50px;
+		border: 1px solid black;
+	}
+</style>
+
+<div id="grid"></div>
+<button id="draggable-button">Drag Me</button>
+
+<script>
+	const grid = document.getElementById("grid");
+	const button = document.getElementById("draggable-button");
+
+	// Function to create grid cells with drop targets
+	function createGridCells(rows, cols) {
+		for (let i = 0; i < rows; i++) {
+			const row = document.createElement("div");
+			row.classList.add("grid-row");
+			for (let j = 0; j < cols; j++) {
+				const cell = document.createElement("div");
+				cell.classList.add("grid-cell");
+				cell.addEventListener("drop", handleDrop); // Add drop event listener
+				row.appendChild(cell);
+			}
+			grid.appendChild(row);
+		}
+	}
+
+	// Function to handle drag events (using absolute positioning)
+	let initialX, initialY;
+
+	button.addEventListener("mousedown", function (event) {
+		initialX = event.clientX - button.offsetLeft;
+		initialY = event.clientY - button.offsetTop;
+
+		document.addEventListener("mousemove", drag);
+	});
+
+	function drag(event) {
+		const newX = event.clientX - initialX;
+		const newY = event.clientY - initialY;
+
+		// Ensure the button stays within the grid container
+		const gridRect = grid.getBoundingClientRect();
+		button.style.left =
+			Math.max(0, Math.min(newX, gridRect.width - button.clientWidth)) +
+			"px";
+		button.style.top =
+			Math.max(0, Math.min(newY, gridRect.height - button.clientHeight)) +
+			"px";
+	}
+
+	document.addEventListener("mouseup", function (event) {
+		document.removeEventListener("mousemove", drag);
+		handleDrop(event);
+	});
+
+	// Function to handle drop events
+	function handleDrop(event) {
+		event.preventDefault(); // Prevent default drop behavior
+		console.log("Drop event triggered!"); // Check if event fires
+
+		const droppedButtonId = "draggable-button";
+		const droppedButton = document.getElementById(droppedButtonId);
+
+		if (droppedButton) {
+			// Check for valid drop target (optional)
+			if (event.target.classList.contains("grid-cell")) {
+				event.target.appendChild(droppedButton); // Add button to the cell
+			} else {
+				console.warn("Invalid drop target. Button not added.");
+			}
+		} else {
+			console.warn("Dragged button not found.");
+		}
+	}
+	// Create the grid (adjust rows and cols as needed)
+	createGridCells(3, 3); // Example: 3 rows, 3 columns
+</script>
